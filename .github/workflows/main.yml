@@ -5,7 +5,31 @@ on:
     branches: [master]
 
 jobs:
-  build-test-deploy:
+  sonar-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+
+    - name: SonarQube Scan - Frontend
+      uses: SonarSource/sonarqube-scan-action@v2.0
+      with:
+        projectBaseDir: frontend
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+    - name: SonarQube Scan - Backend
+      uses: SonarSource/sonarqube-scan-action@v2.0
+      with:
+        projectBaseDir: backend
+      env:
+        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
+
+  build-and-deploy:
+    needs: sonar-analysis
     runs-on: ubuntu-latest
 
     services:
@@ -21,24 +45,23 @@ jobs:
       DOCKER_HOST: tcp://localhost:2375
 
     steps:
-    # 1. Checkout source code
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # 2. Set up Node.js for frontend
+    # frontend build
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
         node-version: '20'
 
-    - name: Install frontend dependencies and build
+    - name: Build frontend
       run: |
         cd frontend
         npm install -g @angular/cli
         npm install
         ng build --configuration production
 
-    # 3. Set up Python for backend
+    # backend setup
     - name: Set up Python
       uses: actions/setup-python@v4
       with:
@@ -51,37 +74,17 @@ jobs:
         cd ../payment_service
         python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
-    # 4. Run SonarQube scan - Frontend
-    - name: SonarQube Scan - Frontend
-      uses: SonarSource/sonarqube-scan-action@v2.0
-      with:
-        projectBaseDir: frontend
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-    # 5. Run SonarQube scan - Backend
-    - name: SonarQube Scan - Backend
-      uses: SonarSource/sonarqube-scan-action@v2.0
-      with:
-        projectBaseDir: backend
-      env:
-        SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-        SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-
-    # 6. Build Docker images
-    - name: Docker Build
+    # docker build & push
+    - name: Docker build images
       run: |
         docker build -t payment-frontend ./frontend
         docker build -t auth-service ./backend/auth_service
         docker build -t payment-service ./backend/payment_service
 
-    # 7. Login to Nexus Docker registry (HTTP)
-    - name: Docker Login to Nexus
+    - name: Docker login to Nexus
       run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.NEXUS_REPO_URL }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
 
-    # 8. Tag and Push Docker images
-    - name: Push Docker Images to Nexus
+    - name: Push images to Nexus
       run: |
         docker tag payment-frontend ${{ secrets.NEXUS_REPO_URL }}/payment-frontend:latest
         docker tag auth-service ${{ secrets.NEXUS_REPO_URL }}/auth-service:latest
@@ -91,8 +94,7 @@ jobs:
         docker push ${{ secrets.NEXUS_REPO_URL }}/auth-service:latest
         docker push ${{ secrets.NEXUS_REPO_URL }}/payment-service:latest
 
-    # 9. SSH into EC2 and deploy
-    - name: SSH and Deploy to App EC2
+    - name: SSH Deploy to EC2
       uses: appleboy/ssh-action@v1.0.0
       with:
         host: ${{ secrets.EC2_HOST }}
