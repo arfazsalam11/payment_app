@@ -8,16 +8,28 @@ jobs:
   build-test-deploy:
     runs-on: ubuntu-latest
 
+    services:
+      docker:
+        image: docker:dind
+        options: >-
+          --privileged
+          -e DOCKER_TLS_CERTDIR=""
+        ports:
+          - 2375:2375
+
+    env:
+      DOCKER_HOST: tcp://localhost:2375
+
     steps:
-    # 1. Checkout code
+    # 1. Checkout source code
     - name: Checkout code
       uses: actions/checkout@v3
 
-    # 2. Set up Node.js for Angular frontend
+    # 2. Set up Node.js for frontend
     - name: Set up Node.js
       uses: actions/setup-node@v3
       with:
-        node-version: '20.18.0'
+        node-version: '20'
 
     - name: Install frontend dependencies and build
       run: |
@@ -39,7 +51,7 @@ jobs:
         cd ../payment_service
         python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
-    # 4. SonarQube scan - frontend
+    # 4. Run SonarQube scan - Frontend
     - name: SonarQube Scan - Frontend
       uses: SonarSource/sonarqube-scan-action@v2.0
       with:
@@ -48,7 +60,7 @@ jobs:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-    # 5. SonarQube scan - backend
+    # 5. Run SonarQube scan - Backend
     - name: SonarQube Scan - Backend
       uses: SonarSource/sonarqube-scan-action@v2.0
       with:
@@ -57,18 +69,19 @@ jobs:
         SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
         SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
 
-    # 6. Docker Build
+    # 6. Build Docker images
     - name: Docker Build
       run: |
         docker build -t payment-frontend ./frontend
         docker build -t auth-service ./backend/auth_service
         docker build -t payment-service ./backend/payment_service
 
-    # 7. Push to Nexus
-    - name: Login to Nexus Docker registry
+    # 7. Login to Nexus Docker registry (HTTP)
+    - name: Docker Login to Nexus
       run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.NEXUS_REPO_URL }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
 
-    - name: Tag and Push Docker Images
+    # 8. Tag and Push Docker images
+    - name: Push Docker Images to Nexus
       run: |
         docker tag payment-frontend ${{ secrets.NEXUS_REPO_URL }}/payment-frontend:latest
         docker tag auth-service ${{ secrets.NEXUS_REPO_URL }}/auth-service:latest
@@ -78,8 +91,8 @@ jobs:
         docker push ${{ secrets.NEXUS_REPO_URL }}/auth-service:latest
         docker push ${{ secrets.NEXUS_REPO_URL }}/payment-service:latest
 
-    # 8. SSH to App EC2 and Deploy
-    - name: SSH and Deploy to EC2
+    # 9. SSH into EC2 and deploy
+    - name: SSH and Deploy to App EC2
       uses: appleboy/ssh-action@v1.0.0
       with:
         host: ${{ secrets.EC2_HOST }}
