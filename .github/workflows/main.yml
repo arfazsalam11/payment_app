@@ -72,6 +72,23 @@ jobs:
           python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
       # Docker build & push
+      - name: Configure Docker for insecure registry
+        env:
+          NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
+        run: |
+          # Extract hostname from NEXUS_REPO_URL (remove http:// if present)
+          REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
+          
+          # Configure Docker daemon for insecure registry
+          sudo mkdir -p /etc/docker
+          echo "{\"insecure-registries\":[\"$REGISTRY_HOST\"]}" | sudo tee /etc/docker/daemon.json
+          
+          # Restart Docker daemon
+          sudo systemctl restart docker
+          
+          # Wait for Docker to be ready
+          sleep 5
+
       - name: Docker build images
         run: |
           docker build -t payment-frontend ./frontend
