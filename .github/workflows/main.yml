@@ -82,7 +82,9 @@ jobs:
         docker build -t payment-service ./backend/payment_service
 
     - name: Docker login to Nexus
-      run: echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.NEXUS_REPO_URL }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
+      run: |
+        echo "${{ secrets.NEXUS_PASSWORD }}" | docker login http://${{ secrets.NEXUS_REPO_URL }} -u ${{ secrets.NEXUS_USERNAME }} --password-stdin
+
 
     - name: Push images to Nexus
       run: |
