@@ -2,7 +2,7 @@ name: CI/CD Pipeline - Payment App
 
 on:
   push:
-    branches: [master]  # change to [master] if needed
+    branches: [master]
 
 jobs:
   sonar-analysis:
@@ -30,7 +30,6 @@ jobs:
   build-and-deploy:
     needs: sonar-analysis
     runs-on: self-hosted
-
     steps:
       - name: Checkout code
         uses: actions/checkout@v3
@@ -61,6 +60,22 @@ jobs:
           cd ../payment_service
           python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
 
+      # Configure Docker for insecure registry (if needed)
+      - name: Configure Docker for insecure registry
+        env:
+          NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
+        run: |
+          # Extract hostname from NEXUS_REPO_URL (remove http:// if present)
+          REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
+          
+          # Check if insecure registry is already configured
+          if ! grep -q "$REGISTRY_HOST" /etc/docker/daemon.json 2>/dev/null; then
+            sudo mkdir -p /etc/docker
+            echo "{\"insecure-registries\":[\"$REGISTRY_HOST\"]}" | sudo tee /etc/docker/daemon.json
+            sudo systemctl restart docker
+            sleep 5
+          fi
+
       # Docker login to Nexus
       - name: Docker login to Nexus
         env:
@@ -68,7 +83,9 @@ jobs:
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
         run: |
-          echo "$NEXUS_PASSWORD" | docker login http://$NEXUS_REPO_URL -u "$NEXUS_USERNAME" --password-stdin
+          # Remove http:// prefix if present for login
+          REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
+          echo "$NEXUS_PASSWORD" | docker login $REGISTRY_HOST -u "$NEXUS_USERNAME" --password-stdin
 
       # Build Docker images
       - name: Build Docker images
@@ -85,7 +102,7 @@ jobs:
           docker tag payment-frontend $NEXUS_REPO_URL/payment-frontend:latest
           docker tag auth-service $NEXUS_REPO_URL/auth-service:latest
           docker tag payment-service $NEXUS_REPO_URL/payment-service:latest
-
+          
           docker push $NEXUS_REPO_URL/payment-frontend:latest
           docker push $NEXUS_REPO_URL/auth-service:latest
           docker push $NEXUS_REPO_URL/payment-service:latest
@@ -94,19 +111,26 @@ jobs:
       - name: Docker logout
         env:
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
-        run: docker logout http://$NEXUS_REPO_URL
+        run: |
+          REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
+          docker logout $REGISTRY_HOST
         if: always()
 
-      # ✅ Fast copy instead of clone
-      - name: Prepare deployment directory
-        run: |
-          sudo rm -rf /home/ubuntu/payment_app
-          sudo cp -r $GITHUB_WORKSPACE /home/ubuntu/payment_app
-
-      # Deploy with Docker Compose
+      # Deploy directly from current workspace (No copying needed!)
       - name: Deploy with Docker Compose
         run: |
-          cd /home/ubuntu/payment_app
+          # Stop existing containers
           docker compose down || true
+          
+          # Pull latest images from Nexus
           docker compose pull
+          
+          # Start new containers with fresh images
           docker compose up -d --build
+
+      # Cleanup old Docker images (optional)
+      - name: Cleanup old Docker images
+        run: |
+          docker image prune -f
+          docker system prune -f --volumes
+        if: always()
