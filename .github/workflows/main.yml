@@ -34,41 +34,102 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # Frontend build
+      # Initial disk space check and cleanup
+      - name: Check and free up disk space
+        run: |
+          echo "=== Initial disk usage ==="
+          df -h
+          
+          echo "=== Cleaning up system ==="
+          # Clean package cache
+          sudo apt-get clean
+          sudo apt-get autoclean
+          
+          # Remove old Docker images and containers
+          docker system prune -f --volumes || true
+          docker image prune -a -f || true
+          
+          # Clean npm cache
+          npm cache clean --force || true
+          
+          # Clean pip cache
+          pip cache purge || true
+          
+          # Remove old logs
+          sudo journalctl --vacuum-time=1d || true
+          
+          echo "=== Disk usage after cleanup ==="
+          df -h
+
+      # Frontend build with optimization
       - name: Set up Node.js
         uses: actions/setup-node@v3
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Build frontend
         run: |
           cd frontend
-          npm install -g @angular/cli
-          npm install
-          ng build --configuration production
+          
+          # Install Angular CLI globally if not exists
+          if ! command -v ng &> /dev/null; then
+            npm install -g @angular/cli
+          fi
+          
+          # Install dependencies with cache optimization
+          npm ci --prefer-offline --no-audit
+          
+          # Build with optimization
+          ng build --configuration production --output-hashing=all
+          
+          # Clean node_modules after build to free space
+          rm -rf node_modules
 
-      # Backend setup
+      # Backend setup with virtual environment optimization
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
+          cache: 'pip'
 
       - name: Install backend dependencies
         run: |
+          echo "=== Installing auth_service dependencies ==="
           cd backend/auth_service
-          python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+          
+          # Create virtual environment
+          python -m venv venv
+          source venv/bin/activate
+          
+          # Upgrade pip and install dependencies without cache
+          pip install --no-cache-dir --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+          
+          # Deactivate and move to next service
+          deactivate
           cd ../payment_service
-          python -m venv venv && source venv/bin/activate && pip install -r requirements.txt
+          
+          echo "=== Installing payment_service dependencies ==="
+          python -m venv venv
+          source venv/bin/activate
+          
+          pip install --no-cache-dir --upgrade pip
+          pip install --no-cache-dir -r requirements.txt
+          
+          deactivate
+          
+          echo "=== Disk usage after Python setup ==="
+          df -h
 
-      # Configure Docker for insecure registry (if needed)
+      # Configure Docker for insecure registry
       - name: Configure Docker for insecure registry
         env:
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
         run: |
-          # Extract hostname from NEXUS_REPO_URL (remove http:// if present)
           REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
           
-          # Check if insecure registry is already configured
           if ! grep -q "$REGISTRY_HOST" /etc/docker/daemon.json 2>/dev/null; then
             sudo mkdir -p /etc/docker
             echo "{\"insecure-registries\":[\"$REGISTRY_HOST\"]}" | sudo tee /etc/docker/daemon.json
@@ -83,29 +144,57 @@ jobs:
           NEXUS_PASSWORD: ${{ secrets.NEXUS_PASSWORD }}
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
         run: |
-          # Remove http:// prefix if present for login
           REGISTRY_HOST=$(echo $NEXUS_REPO_URL | sed 's|http://||')
           echo "$NEXUS_PASSWORD" | docker login $REGISTRY_HOST -u "$NEXUS_USERNAME" --password-stdin
 
-      # Build Docker images
+      # Build Docker images with optimization
       - name: Build Docker images
         run: |
+          echo "=== Building Docker images ==="
+          
+          # Build images one by one to manage memory usage
+          echo "Building frontend image..."
           docker build -t payment-frontend ./frontend
+          
+          echo "Building auth-service image..."
           docker build -t auth-service ./backend/auth_service
+          
+          echo "Building payment-service image..."
           docker build -t payment-service ./backend/payment_service
+          
+          echo "=== Disk usage after build ==="
+          df -h
 
       # Push Docker images to Nexus
       - name: Push Docker images to Nexus
         env:
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
         run: |
-          docker tag payment-frontend $NEXUS_REPO_URL/payment-frontend:latest
-          docker tag auth-service $NEXUS_REPO_URL/auth-service:latest
-          docker tag payment-service $NEXUS_REPO_URL/payment-service:latest
+          echo "=== Tagging and pushing images ==="
           
+          # Tag and push frontend
+          docker tag payment-frontend $NEXUS_REPO_URL/payment-frontend:latest
           docker push $NEXUS_REPO_URL/payment-frontend:latest
+          
+          # Remove local image after push to free space
+          docker rmi payment-frontend $NEXUS_REPO_URL/payment-frontend:latest || true
+          
+          # Tag and push auth-service
+          docker tag auth-service $NEXUS_REPO_URL/auth-service:latest
           docker push $NEXUS_REPO_URL/auth-service:latest
+          
+          # Remove local image after push
+          docker rmi auth-service $NEXUS_REPO_URL/auth-service:latest || true
+          
+          # Tag and push payment-service
+          docker tag payment-service $NEXUS_REPO_URL/payment-service:latest
           docker push $NEXUS_REPO_URL/payment-service:latest
+          
+          # Remove local image after push
+          docker rmi payment-service $NEXUS_REPO_URL/payment-service:latest || true
+          
+          echo "=== Disk usage after push ==="
+          df -h
 
       # Logout from Docker
       - name: Docker logout
@@ -116,21 +205,69 @@ jobs:
           docker logout $REGISTRY_HOST
         if: always()
 
-      # Deploy directly from current workspace (No copying needed!)
+      # Deploy with Docker Compose
       - name: Deploy with Docker Compose
         run: |
+          echo "=== Deploying with Docker Compose ==="
+          
           # Stop existing containers
           docker compose down || true
+          
+          # Clean up orphaned containers
+          docker compose down --remove-orphans || true
           
           # Pull latest images from Nexus
           docker compose pull
           
-          # Start new containers with fresh images
-          docker compose up -d --build
+          # Start new containers
+          docker compose up -d --force-recreate
+          
+          # Verify deployment
+          docker compose ps
 
-      # Cleanup old Docker images (optional)
+      # Final cleanup
       - name: Cleanup old Docker images
         run: |
+          echo "=== Final cleanup ==="
+          
+          # Remove dangling images
           docker image prune -f
+          
+          # Remove unused containers, networks, and volumes
           docker system prune -f --volumes
+          
+          # Remove old/unused images (keep last 3 versions)
+          docker images --format "table {{.Repository}}\t{{.Tag}}\t{{.ID}}\t{{.CreatedAt}}" | \
+          grep -E "(payment-frontend|auth-service|payment-service)" | \
+          sort -k4 -r | \
+          tail -n +4 | \
+          awk '{print $3}' | \
+          xargs -r docker rmi -f || true
+          
+          echo "=== Final disk usage ==="
+          df -h
+        if: always()
+
+      # Emergency cleanup if disk space is critically low
+      - name: Emergency cleanup
+        run: |
+          DISK_USAGE=$(df / | tail -1 | awk '{print $5}' | sed 's/%//')
+          if [ "$DISK_USAGE" -gt 85 ]; then
+            echo "=== Emergency cleanup triggered (disk usage: ${DISK_USAGE}%) ==="
+            
+            # Stop all containers
+            docker stop $(docker ps -aq) || true
+            
+            # Remove all containers
+            docker rm $(docker ps -aq) || true
+            
+            # Remove all images
+            docker rmi $(docker images -q) -f || true
+            
+            # Clean everything
+            docker system prune -a -f --volumes || true
+            
+            echo "=== Emergency cleanup completed ==="
+            df -h
+          fi
         if: always()
