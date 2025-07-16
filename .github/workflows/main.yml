@@ -2,7 +2,7 @@ name: CI/CD Pipeline - Payment App
 
 on:
   push:
-    branches: [master]  # change to 'master' if your branch is named 'master'
+    branches: [master]  # Change to [master] if needed
 
 jobs:
   sonar-analysis:
@@ -90,17 +90,23 @@ jobs:
           docker push $NEXUS_REPO_URL/auth-service:latest
           docker push $NEXUS_REPO_URL/payment-service:latest
 
-      # Optional logout
       - name: Docker logout
         env:
           NEXUS_REPO_URL: ${{ secrets.NEXUS_REPO_URL }}
         run: docker logout http://$NEXUS_REPO_URL
         if: always()
 
-      # Deploy to same EC2 instance (optional, since it's self-hosted)
-      - name: Local Deploy using docker-compose
+      # Clone repo into /home/ubuntu/payment_app
+      - name: Clone repository for deployment
         run: |
-          cd /home/ubuntu/payment_app  # replace with your actual path
-          docker compose down
+          cd /home/ubuntu
+          rm -rf payment_app
+          git clone https://github.com/arfazsalam11/payment_application.git payment_app
+
+      # Run docker-compose deployment
+      - name: Deploy with Docker Compose
+        run: |
+          cd /home/ubuntu/payment_app
+          docker compose down || true
           docker compose pull
           docker compose up -d --build
